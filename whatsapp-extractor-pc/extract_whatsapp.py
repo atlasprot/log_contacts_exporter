@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-WhatsApp Number Extractor + Call History
-Extracts phone numbers from WhatsApp database and call history via ADB
+WhatsApp Full Number Extractor
+Extracts phone numbers from WhatsApp database via ADB
 Requires: Rooted Android phone connected via USB
 """
 
@@ -9,7 +9,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import csv
 from pathlib import Path
 
@@ -37,23 +36,6 @@ class WhatsAppExtractor:
             return False
         print(f"✅ Phone connected: {devices[0]}")
         return True
-    
-    def clean_phone(self, phone):
-        """Clean and normalize phone number"""
-        if not phone:
-            return None
-        # Remove spaces, dashes, etc.
-        phone = re.sub(r'[\s\-\(\)]', '', phone)
-        # Remove + prefix
-        phone = phone.replace("+", "")
-        # Convert 964 to 0
-        if phone.startswith("964"):
-            phone = "0" + phone[3:]
-        return phone
-    
-    def is_valid_phone(self, phone):
-        """Check if phone is valid Iraqi format"""
-        return bool(re.match(r'^0[67]\d{9}$', phone))
     
     def extract_files(self):
         """Extract WhatsApp database files from phone"""
@@ -100,7 +82,7 @@ class WhatsAppExtractor:
                 print("❌ Key file not found. Cannot decrypt database.")
                 return None
         except ImportError:
-            print("⚠️ wa-crypt-tools not installed. Trying alternative methods...")
+            print("⚠️ wa-crypt-tools not installed.")
             return None
         
         if db_file.exists():
@@ -108,97 +90,86 @@ class WhatsAppExtractor:
             return db_file
         return None
     
-    def extract_numbers_from_db(self, db_path):
-        """Extract phone numbers from WhatsApp database"""
-        print("\n📱 Extracting WhatsApp numbers...")
+    def extract_from_whatsapp_db(self, db_path):
+        """Extract ALL phone numbers from WhatsApp database"""
+        print("\n📱 Extracting from WhatsApp...")
         
         try:
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
             
-            # Get phone numbers from chat table
-            print("   Reading chats...")
-            cursor.execute("SELECT DISTINCT jid FROM chat")
+            # 1. WhatsApp Numbers/Contacts
+            print("   [1/4] Reading WhatsApp contacts...")
+            cursor.execute("SELECT jid FROM wa_contacts")
             for row in cursor.fetchall():
                 jid = row[0]
                 if jid:
                     phone = self.extract_phone_from_jid(jid)
-                    if phone and phone not in self.numbers:
-                        self.numbers[phone] = "WhatsApp"
+                    if phone:
+                        self.numbers[phone] = "WhatsApp Contact"
             
-            # Get phone numbers from messages
-            print("   Reading messages...")
+            # 2. Chat List (all conversations)
+            print("   [2/4] Reading chat list...")
+            cursor.execute("SELECT jid FROM chat")
+            for row in cursor.fetchall():
+                jid = row[0]
+                if jid:
+                    phone = self.extract_phone_from_jid(jid)
+                    if phone:
+                        if phone not in self.numbers:
+                            self.numbers[phone] = "WhatsApp Chat"
+            
+            # 3. Messages - sender numbers
+            print("   [3/4] Reading messages (sender numbers)...")
             cursor.execute("SELECT DISTINCT key_remote_jid FROM messages")
             for row in cursor.fetchall():
                 jid = row[0]
                 if jid:
                     phone = self.extract_phone_from_jid(jid)
-                    if phone and phone not in self.numbers:
-                        self.numbers[phone] = "WhatsApp"
+                    if phone:
+                        if phone not in self.numbers:
+                            self.numbers[phone] = "WhatsApp Message"
             
-            # Get phone numbers from group participants
-            print("   Reading group members...")
-            cursor.execute("SELECT DISTINCT jid FROM group_participants")
+            # 4. Numbers shared in message text
+            print("   [4/4] Scanning messages for phone numbers...")
+            cursor.execute("SELECT data FROM messages WHERE data IS NOT NULL")
             for row in cursor.fetchall():
-                jid = row[0]
-                if jid:
-                    phone = self.extract_phone_from_jid(jid)
-                    if phone and phone not in self.numbers:
-                        self.numbers[phone] = "WhatsApp"
+                text = row[0]
+                if text:
+                    found_phones = self.find_phones_in_text(text)
+                    for phone in found_phones:
+                        if phone not in self.numbers:
+                            self.numbers[phone] = "Phone in Message"
             
             conn.close()
+            print(f"   Found {len(self.numbers)} phone numbers!")
             
         except Exception as e:
             print(f"❌ Error reading WhatsApp database: {e}")
     
-    def extract_calls(self):
-        """Extract phone numbers from call history via ADB"""
-        print("\n📞 Extracting call history...")
-        
-        # Try content provider method (no root needed for call log)
-        print("   Querying call log...")
-        stdout, _ = self.run_adb("shell content query --uri content://call_log/calls --projection number,duration")
-        
-        call_count = 0
-        for line in stdout.split("\n"):
-            if "number=" in line:
-                match = re.search(r'number=([^\s,]+)', line)
-                if match:
-                    phone = self.clean_phone(match.group(1))
-                    if phone and self.is_valid_phone(phone):
-                        if phone not in self.numbers:
-                            self.numbers[phone] = "Call Log"
-                            call_count += 1
-        
-        # Try database method if content provider didn't work
-        if call_count == 0:
-            print("   Trying database method...")
-            self.run_adb("shell su -c 'mkdir -p /sdcard/calls_extract'")
-            self.run_adb("shell su -c 'cp /data/data/com.android.providers.telephony/databases/telephony.db /sdcard/calls_extract/' 2>/dev/null || echo 'Not found'")
-            self.run_adb("pull /sdcard/calls_extract temp_calls.db 2>/dev/null")
-            
-            calls_db = Path("temp_calls.db")
-            if calls_db.exists():
-                try:
-                    conn = sqlite3.connect(str(calls_db))
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT DISTINCT number FROM calls")
-                    for row in cursor.fetchall():
-                        phone = self.clean_phone(row[0])
-                        if phone and self.is_valid_phone(phone):
-                            if phone not in self.numbers:
-                                self.numbers[phone] = "Call Log"
-                                call_count += 1
-                    conn.close()
-                    calls_db.unlink()
-                except Exception as e:
-                    print(f"   ⚠️ Error: {e}")
-        
-        print(f"   Extracted {call_count} call numbers")
+    def find_phones_in_text(self, text):
+        """Find phone numbers in message text"""
+        phones = []
+        # Iraqi formats
+        patterns = [
+            r'\+964[67]\d{9}',
+            r'07\d{9}',
+            r'01\d{9}',
+            r'964[67]\d{9}',
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                phone = match.group()
+                phone = phone.replace("+", "").replace(" ", "")
+                if phone.startswith("964"):
+                    phone = "0" + phone[3:]
+                if re.match(r'^0[67]\d{9}$', phone):
+                    phones.append(phone)
+        return phones
     
     def extract_phone_from_jid(self, jid):
         """Extract phone number from WhatsApp JID"""
-        match = re.search(r'@', jid)
+        match = re.search(r'@', str(jid))
         if match:
             phone = jid[:match.start()]
             phone = phone.replace("+", "")
@@ -208,7 +179,7 @@ class WhatsAppExtractor:
                 return phone
         return None
     
-    def export_to_csv(self, filename="all_numbers.csv"):
+    def export_to_csv(self, filename="whatsapp_numbers.csv"):
         """Export numbers to CSV"""
         print(f"\n💾 Exporting to {filename}...")
         
@@ -230,21 +201,31 @@ class WhatsAppExtractor:
     def run(self):
         """Main execution"""
         print("=" * 50)
-        print("📱 WhatsApp + Call History Extractor")
+        print("📱 WhatsApp Full Number Extractor")
         print("=" * 50)
         
         # Check connection
         if not self.check_connection():
             return
         
-        # Extract call history (always)
-        self.extract_calls()
+        # Extract WhatsApp files
+        if not self.extract_files():
+            print("❌ Failed to extract WhatsApp files")
+            return
         
-        # Extract WhatsApp (requires root + decryption)
-        if self.extract_files():
-            db_path = self.decrypt_database()
-            if db_path:
-                self.extract_numbers_from_db(db_path)
+        # Decrypt database
+        db_path = self.decrypt_database()
+        if not db_path:
+            print("\n⚠️ Cannot decrypt database.")
+            print("\n📋 Manual instructions:")
+            print("1. Root your phone")
+            print("2. Copy /data/data/com.whatsapp/databases/msgstore.db.crypt14 to /sdcard/")
+            print("3. Copy /data/data/com.whatsapp/files/key to /sdcard/")
+            print("4. Pull to computer and decrypt with wa-crypt-tools")
+            return
+        
+        # Extract from WhatsApp
+        self.extract_from_whatsapp_db(db_path)
         
         if not self.numbers:
             print("\n⚠️ No phone numbers found")

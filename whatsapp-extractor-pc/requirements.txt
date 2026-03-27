@@ -1,0 +1,5 @@
+# WhatsApp Extractor PC Tool
+# Requirements: pip install -r requirements.txt
+
+wa-crypt-tools>=0.1.0
+sqlcipher-wheel>=4.5.4

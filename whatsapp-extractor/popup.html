@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: Arial, sans-serif;
+    }
+    h2 {
+      margin: 0 0 15px;
+      font-size: 16px;
+      color: #333;
+    }
+    .checkbox-group {
+      margin: 10px 0;
+    }
+    .checkbox-group label {
+      display: block;
+      margin: 5px 0;
+      cursor: pointer;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      margin: 5px 0;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #startBtn {
+      background: #25D366;
+      color: white;
+    }
+    #downloadBtn {
+      background: #128C7E;
+      color: white;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #666;
+    }
+    .count {
+      font-weight: bold;
+      color: #128C7E;
+    }
+  </style>
+</head>
+<body>
+  <h2>📱 WhatsApp Extractor</h2>
+  
+  <div class="checkbox-group">
+    <label>
+      <input type="checkbox" id="chatList" checked> Chat List
+    </label>
+    <label>
+      <input type="checkbox" id="contacts" checked> Contacts
+    </label>
+    <label>
+      <input type="checkbox" id="messages"> Messages (slower)
+    </label>
+  </div>
+  
+  <button id="startBtn">▶ Start</button>
+  <button id="downloadBtn" disabled>⬇ Download CSV</button>
+  
+  <div id="status">Ready</div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-WhatsApp Number Extractor
-Extracts phone numbers from WhatsApp database via ADB
+WhatsApp Number Extractor + Call History
+Extracts phone numbers from WhatsApp database and call history via ADB
 Requires: Rooted Android phone connected via USB
 """
 
@@ -38,6 +38,23 @@ class WhatsAppExtractor:
         print(f"✅ Phone connected: {devices[0]}")
         return True
     
+    def clean_phone(self, phone):
+        """Clean and normalize phone number"""
+        if not phone:
+            return None
+        # Remove spaces, dashes, etc.
+        phone = re.sub(r'[\s\-\(\)]', '', phone)
+        # Remove + prefix
+        phone = phone.replace("+", "")
+        # Convert 964 to 0
+        if phone.startswith("964"):
+            phone = "0" + phone[3:]
+        return phone
+    
+    def is_valid_phone(self, phone):
+        """Check if phone is valid Iraqi format"""
+        return bool(re.match(r'^0[67]\d{9}$', phone))
+    
     def extract_files(self):
         """Extract WhatsApp database files from phone"""
         print("\n📁 Extracting WhatsApp files...")
@@ -73,23 +90,17 @@ class WhatsAppExtractor:
         
         # Try wa-crypt-tools decryption
         try:
-            # Check if wa-crypt-tools is installed
             import wa_crypt
             print("   Using wa-crypt-tools...")
-            # Decrypt using the key
             if key_file.exists():
-                # Read key file
                 with open(key_file, 'rb') as f:
                     key = f.read()
-                # Decrypt
                 wa_crypt.decrypt_file(str(crypt_file), str(db_file), key)
             else:
                 print("❌ Key file not found. Cannot decrypt database.")
-                print("   The database is encrypted and requires the WhatsApp key.")
                 return None
         except ImportError:
             print("⚠️ wa-crypt-tools not installed. Trying alternative methods...")
-            # Fallback: try common key locations
             return None
         
         if db_file.exists():
@@ -99,13 +110,13 @@ class WhatsAppExtractor:
     
     def extract_numbers_from_db(self, db_path):
         """Extract phone numbers from WhatsApp database"""
-        print("\n📱 Extracting phone numbers...")
+        print("\n📱 Extracting WhatsApp numbers...")
         
         try:
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
             
-            # Get phone numbers from chat table (jid field)
+            # Get phone numbers from chat table
             print("   Reading chats...")
             cursor.execute("SELECT DISTINCT jid FROM chat")
             for row in cursor.fetchall():
@@ -113,9 +124,9 @@ class WhatsAppExtractor:
                 if jid:
                     phone = self.extract_phone_from_jid(jid)
                     if phone and phone not in self.numbers:
-                        self.numbers[phone] = ""
+                        self.numbers[phone] = "WhatsApp"
             
-            # Get phone numbers from messages (key_remote_jid)
+            # Get phone numbers from messages
             print("   Reading messages...")
             cursor.execute("SELECT DISTINCT key_remote_jid FROM messages")
             for row in cursor.fetchall():
@@ -123,7 +134,7 @@ class WhatsAppExtractor:
                 if jid:
                     phone = self.extract_phone_from_jid(jid)
                     if phone and phone not in self.numbers:
-                        self.numbers[phone] = ""
+                        self.numbers[phone] = "WhatsApp"
             
             # Get phone numbers from group participants
             print("   Reading group members...")
@@ -133,40 +144,79 @@ class WhatsAppExtractor:
                 if jid:
                     phone = self.extract_phone_from_jid(jid)
                     if phone and phone not in self.numbers:
-                        self.numbers[phone] = ""
+                        self.numbers[phone] = "WhatsApp"
             
             conn.close()
-            print(f"   Found {len(self.numbers)} unique phone numbers!")
             
         except Exception as e:
-            print(f"❌ Error reading database: {e}")
+            print(f"❌ Error reading WhatsApp database: {e}")
+    
+    def extract_calls(self):
+        """Extract phone numbers from call history via ADB"""
+        print("\n📞 Extracting call history...")
         
-        return self.numbers
+        # Try content provider method (no root needed for call log)
+        print("   Querying call log...")
+        stdout, _ = self.run_adb("shell content query --uri content://call_log/calls --projection number,duration")
+        
+        call_count = 0
+        for line in stdout.split("\n"):
+            if "number=" in line:
+                match = re.search(r'number=([^\s,]+)', line)
+                if match:
+                    phone = self.clean_phone(match.group(1))
+                    if phone and self.is_valid_phone(phone):
+                        if phone not in self.numbers:
+                            self.numbers[phone] = "Call Log"
+                            call_count += 1
+        
+        # Try database method if content provider didn't work
+        if call_count == 0:
+            print("   Trying database method...")
+            self.run_adb("shell su -c 'mkdir -p /sdcard/calls_extract'")
+            self.run_adb("shell su -c 'cp /data/data/com.android.providers.telephony/databases/telephony.db /sdcard/calls_extract/' 2>/dev/null || echo 'Not found'")
+            self.run_adb("pull /sdcard/calls_extract temp_calls.db 2>/dev/null")
+            
+            calls_db = Path("temp_calls.db")
+            if calls_db.exists():
+                try:
+                    conn = sqlite3.connect(str(calls_db))
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT DISTINCT number FROM calls")
+                    for row in cursor.fetchall():
+                        phone = self.clean_phone(row[0])
+                        if phone and self.is_valid_phone(phone):
+                            if phone not in self.numbers:
+                                self.numbers[phone] = "Call Log"
+                                call_count += 1
+                    conn.close()
+                    calls_db.unlink()
+                except Exception as e:
+                    print(f"   ⚠️ Error: {e}")
+        
+        print(f"   Extracted {call_count} call numbers")
     
     def extract_phone_from_jid(self, jid):
         """Extract phone number from WhatsApp JID"""
-        # JID format: 07XXXXXXXX@s.whatsapp.net or 964XXXXXXXXX@s.whatsapp.net
         match = re.search(r'@', jid)
         if match:
             phone = jid[:match.start()]
-            # Normalize: remove + if present, convert 964 to 0
             phone = phone.replace("+", "")
             if phone.startswith("964"):
                 phone = "0" + phone[3:]
-            # Validate Iraqi phone format
             if re.match(r'^0[67]\d{9}$', phone):
                 return phone
         return None
     
-    def export_to_csv(self, filename="whatsapp_numbers.csv"):
+    def export_to_csv(self, filename="all_numbers.csv"):
         """Export numbers to CSV"""
         print(f"\n💾 Exporting to {filename}...")
         
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["phone", "name"])
-            for phone in sorted(self.numbers.keys()):
-                writer.writerow([phone, self.numbers[phone]])
+            writer.writerow(["phone", "source"])
+            for phone, source in sorted(self.numbers.items()):
+                writer.writerow([phone, source])
         
         print(f"✅ Exported {len(self.numbers)} numbers to {filename}")
     
@@ -180,33 +230,21 @@ class WhatsAppExtractor:
     def run(self):
         """Main execution"""
         print("=" * 50)
-        print("📱 WhatsApp Number Extractor")
+        print("📱 WhatsApp + Call History Extractor")
         print("=" * 50)
         
         # Check connection
         if not self.check_connection():
             return
         
-        # Extract files
-        if not self.extract_files():
-            print("❌ Failed to extract WhatsApp files")
-            return
+        # Extract call history (always)
+        self.extract_calls()
         
-        # Decrypt database
-        db_path = self.decrypt_database()
-        if not db_path:
-            print("\n⚠️ Cannot decrypt database automatically.")
-            print("\n📋 Manual extraction instructions:")
-            print("1. Root your phone and install a file manager with root access")
-            print("2. Navigate to /data/data/com.whatsapp/databases/")
-            print("3. Copy msgstore.db.crypt14 and key files to /sdcard/")
-            print("4. Pull them to your computer using: adb pull /sdcard/WhatsApp/ .")
-            print("5. Use wa-crypt-tools to decrypt manually")
-            print("\nOr try: pip install wa-crypt-tools")
-            return
-        
-        # Extract numbers
-        self.extract_numbers_from_db(db_path)
+        # Extract WhatsApp (requires root + decryption)
+        if self.extract_files():
+            db_path = self.decrypt_database()
+            if db_path:
+                self.extract_numbers_from_db(db_path)
         
         if not self.numbers:
             print("\n⚠️ No phone numbers found")
@@ -219,7 +257,7 @@ class WhatsAppExtractor:
         self.cleanup()
         
         print("\n" + "=" * 50)
-        print("✅ Done! Check whatsapp_numbers.csv")
+        print(f"✅ Done! Found {len(self.numbers)} numbers")
         print("=" * 50)
 
 if __name__ == "__main__":
